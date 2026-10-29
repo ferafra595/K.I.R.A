@@ -262,6 +262,16 @@ export default {async fetch(req:Request,env:Env):Promise<Response>{
  const url=new URL(req.url);
  if(!url.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);
  if(!['GET','POST','PATCH','DELETE'].includes(req.method))return json({error:'Metodo non consentito'},405);
- if(req.method!=='GET'&&url.pathname!=='/api/shortcut/ask'&&req.headers.get('origin')!==url.origin)return json({error:'Origin non autorizzata'},403);
+ // L'endpoint usato da Comandi Rapidi iOS non invia necessariamente Origin.
+ // La sua autenticazione è gestita da route() tramite token Bearer privato.
+ if(url.pathname==='/api/shortcut/ask'){
+  if(req.method!=='POST')return json({error:'Metodo non consentito'},405);
+  try{return await route(req,env)}catch(e){return json({error:'Errore endpoint Siri: '+String(e).slice(0,140)},500)}
+ }
+ // Test pubblico, senza segreti: identifica con certezza il codice pubblicato.
+ if(url.pathname==='/api/shortcut/health'&&req.method==='GET'){
+  return json({app:'K.I.R.A.',build:'SIRI-ORIGIN-FIX-20261030',shortcut_origin_bypass:true,endpoint:'/api/shortcut/ask'});
+ }
+ if(req.method!=='GET'&&req.headers.get('origin')!==url.origin)return json({error:'Origin non autorizzata'},403);
  try{return await route(req,env)}catch(e){return json({error:'Errore nella richiesta o database non inizializzato: '+String(e).slice(0,140)},500)}
 }} satisfies ExportedHandler<Env>;
