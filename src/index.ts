@@ -66,7 +66,7 @@ async function route(req:Request,env:Env):Promise<Response>{
   await env.DB.prepare('INSERT INTO usage_daily(day,calls) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET calls=calls+1').bind(day).run();
   let answer='';
   try{
-   const result=await env.AI.run((env.AI_MODEL||'@cf/meta/llama-3.1-8b-instruct') as any,{messages:[{role:'system',content:system},...history.results.reverse().map(x=>({role:x.role,content:x.content})),{role:'user',content:prompt}],max_tokens:1200} as any);
+   const result=await env.AI.run(((!env.AI_MODEL || env.AI_MODEL === '@cf/meta/llama-3.1-8b-instruct') ? '@cf/meta/llama-3.1-8b-instruct-fp8-fast' : env.AI_MODEL) as any,{messages:[{role:'system',content:system},...history.results.reverse().map(x=>({role:x.role,content:x.content})),{role:'user',content:prompt}],max_tokens:1200} as any);
    answer=typeof (result as any)?.response==='string'?(result as any).response:'';
    if(!answer)throw new Error('Risposta vuota dal modello');
   }catch(e){return json({error:'Il servizio AI gratuito non ha risposto. Possibile limite di quota o modello indisponibile. '+String(e).slice(0,180)},503)}
