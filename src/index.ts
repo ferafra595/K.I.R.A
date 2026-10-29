@@ -12,6 +12,20 @@ async function body(req:Request):Promise<Record<string,any>>{if(Number(req.heade
 const str=(v:unknown,max=4000)=>typeof v==='string'?v.trim().slice(0,max):'';
 const matches=(s:string)=>/^[a-f\d-]{36}$/.test(s);
 const cookieAttrs='Path=/; HttpOnly; Secure; SameSite=Strict';
+
+// ZIP senza dipendenze: archivio STORE (nessuna compressione), CRC32 valido.
+function crc32(bytes:Uint8Array){let c=0xffffffff;for(const b of bytes){c^=b;for(let k=0;k<8;k++)c=(c>>>1)^((c&1)?0xedb88320:0)}return(c^0xffffffff)>>>0}
+function createZip(files:{name:string;content:string}[]):Uint8Array{
+ const enc=new TextEncoder();const local:Uint8Array[]=[];const central:Uint8Array[]=[];let offset=0;
+ const w16=(v:DataView,p:number,n:number)=>v.setUint16(p,n,true);const w32=(v:DataView,p:number,n:number)=>v.setUint32(p,n>>>0,true);
+ for(const f of files){const name=enc.encode(f.name),data=enc.encode(f.content);if(name.length>65535)throw Error('Nome file troppo lungo');const crc=crc32(data);
+  const lh=new Uint8Array(30+name.length);const l=new DataView(lh.buffer);w32(l,0,0x04034b50);w16(l,4,20);w16(l,6,0x0800);w16(l,8,0);w32(l,14,crc);w32(l,18,data.length);w32(l,22,data.length);w16(l,26,name.length);lh.set(name,30);local.push(lh,data);
+  const ch=new Uint8Array(46+name.length);const v=new DataView(ch.buffer);w32(v,0,0x02014b50);w16(v,4,20);w16(v,6,20);w16(v,8,0x0800);w32(v,16,crc);w32(v,20,data.length);w32(v,24,data.length);w16(v,28,name.length);w32(v,42,offset);ch.set(name,46);central.push(ch);offset+=lh.length+data.length;
+ }
+ const centralLength=central.reduce((n,x)=>n+x.length,0);const end=new Uint8Array(22);const v=new DataView(end.buffer);w32(v,0,0x06054b50);w16(v,8,files.length);w16(v,10,files.length);w32(v,12,centralLength);w32(v,16,offset);
+ const zip=new Uint8Array(offset+centralLength+end.length);let pos=0;for(const chunk of [...local,...central,end]){zip.set(chunk,pos);pos+=chunk.length}return zip;
+}
+
 async function route(req:Request,env:Env):Promise<Response>{
  const url=new URL(req.url);const p=url.pathname;const method=req.method;
  if(!env.ADMIN_PASSWORD||!env.SESSION_SECRET||env.SESSION_SECRET.length<32)return json({error:'Configurare ADMIN_PASSWORD e SESSION_SECRET nei secret Cloudflare.'},503);
@@ -54,6 +68,18 @@ async function route(req:Request,env:Env):Promise<Response>{
   if(!await env.DB.prepare('SELECT id FROM projects WHERE id=?').bind(projectId).first())return json({error:'Progetto inesistente'},404);
   const version=Number((await env.DB.prepare('SELECT MAX(version) version FROM artifacts WHERE project_id=? AND filename=?').bind(projectId,filename).first<{version:number}>())?.version||0)+1;
   const id=uid();await env.DB.prepare('INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)').bind(id,projectId,filename,content,'text',version,now()).run();return json({id,version},201);
+ }
+
+ if(p==='/api/lab/export'&&method==='GET'){
+  const projectId=url.searchParams.get('project_id')||'';if(!matches(projectId))return json({error:'ID progetto non valido'},400);
+  const project=await env.DB.prepare('SELECT title FROM projects WHERE id=?').bind(projectId).first<{title:string}>();if(!project)return json({error:'Progetto non trovato'},404);
+  const rows=await env.DB.prepare('SELECT filename,content,version FROM artifacts WHERE project_id=? ORDER BY version DESC,created_at DESC LIMIT 500').bind(projectId).all<{filename:string;content:string;version:number}>();
+  const latest=new Map<string,string>();for(const x of rows.results)if(!latest.has(x.filename))latest.set(x.filename,x.content);
+  if(!latest.size)return json({error:'Non ci sono file da esportare'},400);
+  const files=Array.from(latest).filter(([name])=>/^[\w.-]{1,100}$/.test(name)).map(([name,content])=>({name,content}));
+  if(files.length>70||files.reduce((n,f)=>n+f.content.length,0)>2000000)return json({error:'Progetto troppo grande per questa esportazione gratuita'},413);
+  const archive=createZip(files);
+  return new Response(archive.buffer as ArrayBuffer,{headers:{'content-type':'application/zip','content-disposition':`attachment; filename="kira-progetto-${projectId.slice(0,8)}.zip"`,'cache-control':'no-store','x-content-type-options':'nosniff'}});
  }
  if(p==='/api/lab/generate'&&method==='POST'){
   const b=await body(req),projectId=str(b.project_id,40),instruction=str(b.instruction,1200);
@@ -105,7 +131,7 @@ async function route(req:Request,env:Env):Promise<Response>{
   const day=new Date().toISOString().slice(0,10);const used=await env.DB.prepare('SELECT calls FROM usage_daily WHERE day=?').bind(day).first<{calls:number}>();
   if((used?.calls||0)>=35)return json({error:'Limite prudenziale K.I.R.A. di 35 richieste AI al giorno raggiunto per proteggere il budget zero.'},429);
   const [history,memory,project]=await Promise.all([env.DB.prepare('SELECT role,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT 12').bind(conversationId).all<{role:string;content:string}>(),env.DB.prepare('SELECT content FROM memories ORDER BY created_at DESC LIMIT 15').all<{content:string}>(),conversation.project_id?env.DB.prepare('SELECT title,description FROM projects WHERE id=?').bind(conversation.project_id).first<{title:string;description:string}>():Promise.resolve(null)]);
-  const system=`Sei K.I.R.A., partner personale per idee, progettazione e sviluppo. Rispondi sempre in italiano con tono naturale, professionale, collaborativo e diretto. Quando l'utente ti propone un progetto, aiutalo SUBITO: ricava gli obiettivi, proponi un approccio concreto, specifica i vincoli reali e genera bozze, schemi, pseudocodice, codice o testi effettivamente utilizzabili. Sii critica se necessario. Non ripetere inutilmente elenchi di capacità o limitazioni. Se ti chiedono cosa sai fare, descrivi brevemente ciò che puoi fare ora e proponi subito un lavoro concreto. Le tue risposte possono usare Markdown, titoli brevi e blocchi di codice con tripli backtick e lingua. Se fornisci un file testuale, racchiudi il contenuto in un singolo blocco di codice così l'interfaccia può salvarlo nel Project Lab su richiesta dell'utente. Non affermare MAI di aver salvato file, eseguito codice, verificato dati online, usato CAD o controllato Windows senza un risultato dello strumento corrispondente. Attualmente puoi ragionare e generare testo/codice; puoi proporre file da salvare, ma è l'utente che aziona il salvataggio dal Project Lab. Non hai accesso diretto a internet, computer, webcam o programmi CAD. Ricordi autorizzati: ${memory.results.map(x=>x.content).join(' | ').slice(0,3200)}. ${project?`Progetto corrente: ${project.title}. ${project.description}`:''}`;
+  const system=`Sei K.I.R.A., partner personale per idee, progettazione e sviluppo. Rispondi sempre in italiano con tono naturale, professionale, collaborativo e diretto. Quando l'utente ti propone un progetto, aiutalo SUBITO: ricava gli obiettivi, proponi un approccio concreto, specifica i vincoli reali e genera bozze, schemi, pseudocodice, codice o testi effettivamente utilizzabili. Sii critica se necessario. Non ripetere inutilmente elenchi di capacità o limitazioni. Se ti chiedono cosa sai fare, descrivi brevemente ciò che puoi fare ora e proponi subito un lavoro concreto. Le tue risposte possono usare Markdown, titoli brevi e blocchi di codice con tripli backtick e lingua. Se fornisci un file testuale, racchiudi il contenuto in un singolo blocco di codice così l'interfaccia può salvarlo nel Project Lab su richiesta dell'utente. Non affermare MAI di aver creato ZIP scaricabili, allegati, file, eseguito codice, verificato dati online, usato CAD o controllato Windows senza un risultato dello strumento corrispondente. Se chiedono uno ZIP, spiega che possono scaricarlo dal pulsante Esporta ZIP nel Project Lab dopo aver salvato file reali. Attualmente puoi ragionare e generare testo/codice; puoi proporre file da salvare, ma è l'utente che aziona il salvataggio dal Project Lab. Non hai accesso diretto a internet, computer, webcam o programmi CAD. Ricordi autorizzati: ${memory.results.map(x=>x.content).join(' | ').slice(0,3200)}. ${project?`Progetto corrente: ${project.title}. ${project.description}`:''}`;
   await env.DB.prepare('INSERT INTO usage_daily(day,calls) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET calls=calls+1').bind(day).run();
   let answer='';
   try{
