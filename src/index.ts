@@ -1,4 +1,4 @@
-interface Env { DB:D1Database; AI:Ai; ASSETS:Fetcher; ADMIN_PASSWORD:string; SESSION_SECRET:string; AI_MODEL?:string }
+interface Env { DB:D1Database; AI:Ai; ASSETS:Fetcher; ADMIN_PASSWORD:string; SESSION_SECRET:string; KIRA_SHORTCUT_TOKEN?:string; AI_MODEL?:string }
 const encoder=new TextEncoder();
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
 const now=()=>Date.now();
@@ -128,6 +128,27 @@ const isWebsiteRequest=(q:string)=>/\b(crea|fammi|realizza|costruisci|genera|svi
 async function route(req:Request,env:Env):Promise<Response>{
  const url=new URL(req.url);const p=url.pathname;const method=req.method;
  if(!env.ADMIN_PASSWORD||!env.SESSION_SECRET||env.SESSION_SECRET.length<32)return json({error:'Configurare ADMIN_PASSWORD e SESSION_SECRET nei secret Cloudflare.'},503);
+
+ // Endpoint dedicato a Siri/Comandi Rapidi: token distinto dalla password web.
+ if(p==='/api/shortcut/ask'&&method==='POST'){
+  const supplied=req.headers.get('authorization')||'';
+  const token=env.KIRA_SHORTCUT_TOKEN||'';
+  if(token.length<40||!supplied.startsWith('Bearer '))return json({error:'Shortcut non configurato o non autorizzato'},401);
+  const actual=encoder.encode(supplied.slice(7));
+  const expected=encoder.encode(token);
+  if(!equal(actual,expected))return json({error:'Token non valido'},401);
+  const data=await body(req);
+  const message=str(data.message,1500);
+  if(!message)return json({error:'Comando vocale vuoto'},400);
+  if(!await aiQuota(env))return json({error:'Limite AI gratuito giornaliero raggiunto',spoken:'Ho raggiunto il limite gratuito giornaliero. Potremo riprovare domani.'},429);
+  const memory=await env.DB.prepare('SELECT content FROM memories ORDER BY created_at DESC LIMIT 12').all<{content:string}>();
+  const system='Sei K.I.R.A., assistente vocale privato in italiano. Rispondi a voce in modo chiaro, diretto e conciso, senza Markdown, massimo 100 parole. Puoi ragionare e consigliare, ma non hai ancora accesso a rubrica, WhatsApp, telefono, email, posizione o controllo app. Non dire mai di avere inviato messaggi, chiamato, aperto app o svolto azioni se non hai ricevuto esito da strumenti. Se il comando chiede azioni non collegate, dillo sinteticamente. Memorie pertinenti fornite dal proprietario: '+memory.results.map(x=>x.content).join(' | ').slice(0,2000);
+  try{
+   const answer=await aiText(env,[{role:'system',content:system},{role:'user',content:message}],230);
+   const spoken=answer.replace(/```[\s\S]*?```/g,'').replace(/[*#_`]/g,'').trim().slice(0,950);
+   return json({ok:true,spoken:spoken||'Non sono riuscita a preparare una risposta.',action:'speak',performed:false});
+  }catch(e){return json({error:'AI gratuita non disponibile',spoken:'Non riesco a rispondere in questo momento. Riprova più tardi.'},503)}
+ }
  if(p==='/api/status')return json({configured:true,authenticated:await authenticated(req,env)});
  if(p==='/api/login'&&method==='POST'){
   const ip=req.headers.get('CF-Connecting-IP')||'unknown';const iphash=await digest(ip+env.SESSION_SECRET);const block=await env.DB.prepare('SELECT attempts,locked_until FROM attempts WHERE ip_hash=?').bind(iphash).first<{attempts:number;locked_until:number}>();
@@ -224,6 +245,6 @@ export default {async fetch(req:Request,env:Env):Promise<Response>{
  const url=new URL(req.url);
  if(!url.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);
  if(!['GET','POST','PATCH','DELETE'].includes(req.method))return json({error:'Metodo non consentito'},405);
- if(req.method!=='GET'&&req.headers.get('origin')!==url.origin)return json({error:'Origin non autorizzata'},403);
+ if(req.method!=='GET'&&url.pathname!=='/api/shortcut/ask'&&req.headers.get('origin')!==url.origin)return json({error:'Origin non autorizzata'},403);
  try{return await route(req,env)}catch(e){return json({error:'Errore nella richiesta o database non inizializzato: '+String(e).slice(0,140)},500)}
 }} satisfies ExportedHandler<Env>;
