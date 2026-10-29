@@ -132,11 +132,14 @@ async function route(req:Request,env:Env):Promise<Response>{
  // Endpoint dedicato a Siri/Comandi Rapidi: token distinto dalla password web.
  if(p==='/api/shortcut/ask'&&method==='POST'){
   const supplied=req.headers.get('authorization')||'';
-  const token=env.KIRA_SHORTCUT_TOKEN||'';
-  if(token.length<40||!supplied.startsWith('Bearer '))return json({error:'Shortcut non configurato o non autorizzato'},401);
-  const actual=encoder.encode(supplied.slice(7));
-  const expected=encoder.encode(token);
-  if(!equal(actual,expected))return json({error:'Token non valido'},401);
+  if(!supplied.startsWith('Bearer '))return json({error:'Autorizzazione richiesta'},401);
+  const given=supplied.slice(7);
+  // Token generato dall'app stessa oppure secret legacy per vecchi Comandi Rapidi.
+  const saved=await env.DB.prepare('SELECT token_hash FROM shortcut_connections WHERE id=1').first<{token_hash:string}>();
+  const viaDatabase=!!saved&&given.length===64&&/^[a-f0-9]+$/.test(given)&&equal(encoder.encode(await digest(given)),encoder.encode(saved.token_hash));
+  const legacy=env.KIRA_SHORTCUT_TOKEN||'';
+  const viaLegacy=legacy.length>=40&&equal(encoder.encode(given),encoder.encode(legacy));
+  if(!viaDatabase&&!viaLegacy)return json({error:'Token non valido: ricollega iPhone nelle impostazioni'},401);
   const data=await body(req);
   const message=str(data.message,1500);
   if(!message)return json({error:'Comando vocale vuoto'},400);
@@ -162,6 +165,20 @@ async function route(req:Request,env:Env):Promise<Response>{
   const r=json({ok:true});r.headers.append('Set-Cookie',`kira_session=${token}; ${cookieAttrs}; Max-Age=604800`);return r;
  }
  if(!await authenticated(req,env))return json({error:'Accesso richiesto'},401);
+ if(p==='/api/shortcut/connection'&&method==='GET'){
+  const row=await env.DB.prepare('SELECT created_at FROM shortcut_connections WHERE id=1').first<{created_at:number}>();
+  return json({connected:!!row,created_at:row?.created_at||null,endpoint:url.origin+'/api/shortcut/ask'});
+ }
+ if(p==='/api/shortcut/connection'&&method==='POST'){
+  // Sostituisce il vecchio token: quello precedente smette di funzionare.
+  const raw=crypto.getRandomValues(new Uint8Array(32));
+  const token=Array.from(raw).map(n=>n.toString(16).padStart(2,'0')).join('');
+  await env.DB.prepare('INSERT INTO shortcut_connections(id,token_hash,created_at) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET token_hash=excluded.token_hash,created_at=excluded.created_at').bind(await digest(token),now()).run();
+  return json({token,endpoint:url.origin+'/api/shortcut/ask'});
+ }
+ if(p==='/api/shortcut/connection'&&method==='DELETE'){
+  await env.DB.prepare('DELETE FROM shortcut_connections WHERE id=1').run();return json({ok:true});
+ }
  if(p==='/api/logout'&&method==='POST'){const sid=cookie(req,'kira_session');if(sid)await env.DB.prepare('DELETE FROM sessions WHERE id=?').bind(await digest(sid)).run();const r=json({ok:true});r.headers.append('Set-Cookie',`kira_session=; ${cookieAttrs}; Max-Age=0`);return r}
  if(p==='/api/dashboard'&&method==='GET'){
   const [projects,tasks,conversations,usage]=await Promise.all([
