@@ -5,6 +5,6 @@
  "compatibility_date":"2026-10-28",
  "assets":{"directory":"./public","binding":"ASSETS","run_worker_first":["/api/*"]},
  "ai":{"binding":"AI"},
- "d1_databases":[{"binding":"DB","database_name":"kira-db","database_id":"REPLACE_WITH_D1_DATABASE_ID"}],
+ "d1_databases":[{"binding":"DB","database_name":"kira-db","database_id":"f99cbbad-3629-4974-bfbf-953f98865e89"}],
  "vars":{"AI_MODEL":"@cf/meta/llama-3.1-8b-instruct"}
 }
