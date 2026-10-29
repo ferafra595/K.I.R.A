@@ -1,0 +1,5 @@
+{
+ "name":"kira-v1","version":"0.1.0","private":true,"type":"module",
+ "scripts":{"dev":"wrangler dev","deploy":"wrangler deploy","db:local":"wrangler d1 migrations apply kira-db --local","db:remote":"wrangler d1 migrations apply kira-db --remote","check":"tsc --noEmit"},
+ "devDependencies":{"typescript":"^5.9.2","wrangler":"^4.0.0","@cloudflare/workers-types":"^4.20261001.0"}
+}
