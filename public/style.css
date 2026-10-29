@@ -18,3 +18,7 @@
 
 /* K.I.R.A. V1.3 - leggibilità risposta e anteprima isolata */
 .k-md-paragraph{line-height:1.65;margin:.16rem 0}.k-md-gap{height:.75rem}.k-md-heading{font-size:1.06rem;font-weight:700;margin:1rem 0 .45rem}.k-md-list{line-height:1.6;padding-left:1rem;margin:.22rem 0}.k-preview-dialog{width:min(1100px,96vw);max-width:96vw;height:min(850px,93vh);max-height:93vh}.k-preview-dialog iframe{display:block;background:white;width:100%;height:calc(100% - 105px);border:1px solid #39526b;border-radius:10px}.k-preview-dialog .note{margin:.5rem 0}.k-codebox pre{white-space:pre;overflow-x:auto;max-width:100%}
+
+/* K.I.R.A. Project Lab AI action */
+.k-ai-lab{margin:24px 0;padding:22px;border:1px solid #32668b;border-radius:20px;background:linear-gradient(135deg,rgba(25,99,153,.22),rgba(8,26,48,.12))}
+.k-ai-lab h3{margin:10px 0;font-size:23px;color:#e9f8ff}.k-ai-lab p{color:#b0cce1;font-size:15px;line-height:1.6}.k-ai-lab .field{width:100%;box-sizing:border-box;margin:14px 0;min-height:100px}.k-ai-label{font-weight:700;color:#75d3ff;font-size:12px;letter-spacing:.12em}.k-ai-lab small{display:block;margin-top:14px;color:#9abbd3;line-height:1.5}#generationResult{white-space:pre-wrap;color:#a8dcf7;margin-top:12px}.k-generation-banner{margin-top:14px;padding:13px;border:1px solid #287b80;border-radius:12px;background:#123b40;color:#cef8ec}
