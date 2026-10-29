@@ -15,3 +15,6 @@
 .k-savecode:hover{background:#2474a0}
 .k-codebox pre{margin:0;padding:13px;overflow-x:auto;white-space:pre;font-size:13px;line-height:1.5}
 .k-codebox pre code{background:none;border:0;padding:0}
+
+/* K.I.R.A. V1.3 - leggibilità risposta e anteprima isolata */
+.k-md-paragraph{line-height:1.65;margin:.16rem 0}.k-md-gap{height:.75rem}.k-md-heading{font-size:1.06rem;font-weight:700;margin:1rem 0 .45rem}.k-md-list{line-height:1.6;padding-left:1rem;margin:.22rem 0}.k-preview-dialog{width:min(1100px,96vw);max-width:96vw;height:min(850px,93vh);max-height:93vh}.k-preview-dialog iframe{display:block;background:white;width:100%;height:calc(100% - 105px);border:1px solid #39526b;border-radius:10px}.k-preview-dialog .note{margin:.5rem 0}.k-codebox pre{white-space:pre;overflow-x:auto;max-width:100%}
