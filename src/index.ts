@@ -143,14 +143,42 @@ async function route(req:Request,env:Env):Promise<Response>{
   const data=await body(req);
   const message=str(data.message,1500);
   if(!message)return json({error:'Comando vocale vuoto'},400);
-  if(!await aiQuota(env))return json({error:'Limite AI gratuito giornaliero raggiunto',spoken:'Ho raggiunto il limite gratuito giornaliero. Potremo riprovare domani.'},429);
+  // Una conversazione per dispositivo/token: nessun identificativo aggiuntivo richiesto su iPhone.
+  // Il digest incorpora SESSION_SECRET: nessuna credenziale viene memorizzata come testo.
+  const fingerprint=await digest('kira-voice-v1:'+given+':'+env.SESSION_SECRET);
+  const cid=`${fingerprint.slice(0,8)}-${fingerprint.slice(8,12)}-4${fingerprint.slice(13,16)}-a${fingerprint.slice(17,20)}-${fingerprint.slice(20,32)}`;
+  const stop=/^(?:(?:ehi|ok|ciao)\s+)?(?:kira[,\s]*)?(?:fermati|stop|basta|chiudi(?: la conversazione)?|termina(?: la conversazione)?|arrivederci|buonanotte)(?:[!.\s]*)$/i.test(message)
+    || /^(?:grazie[,\s]*)?kira[,\s]*(?:puoi\s+)?(?:fermarti|chiudere|terminare)(?:[!.\s]*)$/i.test(message);
+  if(stop){
+   await env.DB.batch([
+    env.DB.prepare('DELETE FROM messages WHERE conversation_id=?').bind(cid),
+    env.DB.prepare('DELETE FROM conversations WHERE id=?').bind(cid)
+   ]);
+   return json({ok:true,spoken:'Va bene, a presto!',action:'end',end:true,performed:true});
+  }
+  if(!await aiQuota(env))return json({error:'Limite AI gratuito giornaliero raggiunto',spoken:'Ho raggiunto il limite gratuito giornaliero. Potremo riprovare domani.',end:true,action:'end'},429);
+  const old=await env.DB.prepare('SELECT updated_at FROM conversations WHERE id=?').bind(cid).first<{updated_at:number}>();
+  // Dopo 20 minuti di inattività si riparte con un contesto pulito.
+  if(old&&now()-old.updated_at>20*60*1000){
+   await env.DB.prepare('DELETE FROM messages WHERE conversation_id=?').bind(cid).run();
+  }
+  const history=old&&now()-old.updated_at<=20*60*1000
+   ? (await env.DB.prepare('SELECT role,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT 12').bind(cid).all<{role:string;content:string}>()).results.reverse()
+   : [];
   const memory=await env.DB.prepare('SELECT content FROM memories ORDER BY created_at DESC LIMIT 12').all<{content:string}>();
-  const system='Sei K.I.R.A., assistente vocale privato in italiano. Rispondi a voce in modo chiaro, diretto e conciso, senza Markdown, massimo 100 parole. Puoi ragionare e consigliare, ma non hai ancora accesso a rubrica, WhatsApp, telefono, email, posizione o controllo app. Non dire mai di avere inviato messaggi, chiamato, aperto app o svolto azioni se non hai ricevuto esito da strumenti. Se il comando chiede azioni non collegate, dillo sinteticamente. Memorie pertinenti fornite dal proprietario: '+memory.results.map(x=>x.content).join(' | ').slice(0,2000);
+  const system='Sei K.I.R.A., assistente vocale personale in italiano. Conversa naturalmente e usa il contesto delle battute precedenti per risolvere riferimenti come "quello", "quali", "fallo". Rispondi in modo breve, preciso e senza Markdown, massimo 100 parole. Se non sai qualcosa, dillo. Non dichiarare azioni sul telefono, email, WhatsApp o applicazioni non realmente effettuate. Le frasi "Kira fermati", "Kira chiudi", "stop", "basta", "arrivederci" terminano la sessione e vengono già intercettate dal sistema. Memorie autorizzate: '+memory.results.map(x=>x.content).join(' | ').slice(0,1800);
   try{
-   const answer=await aiText(env,[{role:'system',content:system},{role:'user',content:message}],230);
-   const spoken=answer.replace(/```[\s\S]*?```/g,'').replace(/[*#_`]/g,'').trim().slice(0,950);
-   return json({ok:true,spoken:spoken||'Non sono riuscita a preparare una risposta.',action:'speak',performed:false});
-  }catch(e){return json({error:'AI gratuita non disponibile',spoken:'Non riesco a rispondere in questo momento. Riprova più tardi.'},503)}
+   const answer=await aiText(env,[{role:'system',content:system},...history,{role:'user',content:message}],260);
+   const spoken=answer.replace(/```[\s\S]*?```/g,'').replace(/[*#_`]/g,'').trim().slice(0,950)||'Non sono riuscita a preparare una risposta.';
+   const ts=now();
+   const writes=[];
+   if(!old)writes.push(env.DB.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').bind(cid,null,'Conversazione vocale iPhone',ts,ts));
+   else writes.push(env.DB.prepare('UPDATE conversations SET updated_at=? WHERE id=?').bind(ts,cid));
+   writes.push(env.DB.prepare('INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES(?,?,?,?,?)').bind(uid(),cid,'user',message,ts));
+   writes.push(env.DB.prepare('INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES(?,?,?,?,?)').bind(uid(),cid,'assistant',spoken,ts+1));
+   await env.DB.batch(writes);
+   return json({ok:true,spoken,action:'speak',end:false,performed:false,memory_active:true});
+  }catch(e){return json({error:'AI o salvataggio non disponibili',spoken:'Ho avuto un problema con la risposta. Riprova tra poco.',end:false,action:'speak'},503)}
  }
  if(p==='/api/status')return json({configured:true,authenticated:await authenticated(req,env)});
  if(p==='/api/login'&&method==='POST'){
@@ -262,16 +290,6 @@ export default {async fetch(req:Request,env:Env):Promise<Response>{
  const url=new URL(req.url);
  if(!url.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);
  if(!['GET','POST','PATCH','DELETE'].includes(req.method))return json({error:'Metodo non consentito'},405);
- // L'endpoint usato da Comandi Rapidi iOS non invia necessariamente Origin.
- // La sua autenticazione è gestita da route() tramite token Bearer privato.
- if(url.pathname==='/api/shortcut/ask'){
-  if(req.method!=='POST')return json({error:'Metodo non consentito'},405);
-  try{return await route(req,env)}catch(e){return json({error:'Errore endpoint Siri: '+String(e).slice(0,140)},500)}
- }
- // Test pubblico, senza segreti: identifica con certezza il codice pubblicato.
- if(url.pathname==='/api/shortcut/health'&&req.method==='GET'){
-  return json({app:'K.I.R.A.',build:'SIRI-ORIGIN-FIX-20261030',shortcut_origin_bypass:true,endpoint:'/api/shortcut/ask'});
- }
- if(req.method!=='GET'&&req.headers.get('origin')!==url.origin)return json({error:'Origin non autorizzata'},403);
+ if(req.method!=='GET'&&url.pathname!=='/api/shortcut/ask'&&req.headers.get('origin')!==url.origin)return json({error:'Origin non autorizzata'},403);
  try{return await route(req,env)}catch(e){return json({error:'Errore nella richiesta o database non inizializzato: '+String(e).slice(0,140)},500)}
 }} satisfies ExportedHandler<Env>;
